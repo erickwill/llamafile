@@ -121,6 +121,7 @@ LLAMAFILE_HIGHLIGHT_SRCS := \
 LLAMAFILE_SRCS_C := \
 	llamafile/bestline.c \
 	llamafile/cuda.c \
+	llamafile/gpu_backend.c \
 	llamafile/llamafile.c \
 	llamafile/metal.c \
 	llamafile/vulkan.c \
@@ -333,6 +334,24 @@ o/$(MODE)/llamafile/metal.o: llamafile/metal.c
 o/$(MODE)/llamafile/%.o: llamafile/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(LLAMAFILE_CPPFLAGS) -c -o $@ $<
+
+# ==============================================================================
+# GPU backend archive
+# ==============================================================================
+# Single linkable unit grouping the runtime GPU loaders (CUDA/ROCm, Vulkan,
+# Metal) and their shared probe core. The non-llamafile executables
+# (whisperfile, diffusionfile, the llama.cpp tools) pull these in via
+# llamafile_has_gpu(); linking the archive instead of listing each object means
+# adding a GPU backend source does not require editing every consumer's
+# BUILD.mk. Tidiness only: every consumer references llamafile_has_gpu(), so all
+# members are pulled and the build output is unchanged.
+LLAMAFILE_GPU_OBJS := \
+	o/$(MODE)/llamafile/cuda.o \
+	o/$(MODE)/llamafile/gpu_backend.o \
+	o/$(MODE)/llamafile/metal.o \
+	o/$(MODE)/llamafile/vulkan.o
+
+o/$(MODE)/llamafile/gpu.a: $(LLAMAFILE_GPU_OBJS)
 
 o/$(MODE)/llamafile/%.o: llamafile/%.cpp
 	@mkdir -p $(@D)
