@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # transcribefile_smoke.sh — regression smoke for the transcribefile APE.
 #
-# Two layers:
+# Three layers:
 #   1. Model-free probes — always run. Catches CLI argv / WAV-loader /
 #      help-text regressions without needing any model artifact.
 #   2. Parakeet end-to-end — gated on TRANSCRIBEFILE_PARAKEET_GGUF. Skipped
 #      (with a warning, not a failure) when the model isn't available, so
 #      `make check` stays green on machines without the model.
+#   3. Metal backend — needs layer 2's model plus macOS on Apple Silicon
+#      with a registered Metal device; skipped elsewhere. Asserts that
+#      --backend metal selects an MTL device and that the Metal and CPU
+#      transcripts match exactly.
 #
 # Usage:
 #   tests/transcribefile_smoke.sh <path-to-transcribefile-binary>
 #
 # Env:
 #   TRANSCRIBEFILE_PARAKEET_GGUF  Path to a parakeet GGUF; if unset or the
-#                                 file is missing, layer 2 is skipped.
+#                                 file is missing, layers 2 and 3 are skipped.
 
 set -euo pipefail
 
@@ -74,3 +78,43 @@ echo "$out" | grep -q 'realtime:' || fail "parakeet output missing 'realtime:' l
 echo "$out" | grep -qi 'country' || fail "parakeet transcription missing 'country'"
 realtime=$(echo "$out" | grep -oE 'realtime:[[:space:]]+[0-9]+x' | head -1 || true)
 pass "parakeet transcribes jfk.wav (${realtime:-realtime: ?})"
+
+echo "[smoke] layer 3 — metal backend"
+
+# Metal is macOS/Apple-Silicon only. Elsewhere (and on macs where the
+# runtime dylib build isn't possible, e.g. no Xcode CLT) the contract is
+# graceful degradation to CPU, so absence of a metal device is a SKIP,
+# not a failure.
+if [ "$(uname -s)" != "Darwin" ] || [ "$(uname -m)" != "arm64" ]; then
+    echo "  SKIP metal: requires macOS on Apple Silicon" >&2
+    exit 0
+fi
+if ! "$APE" --list-devices 2>/dev/null | grep -q 'kind=metal'; then
+    echo "  SKIP metal: no metal device registered" \
+         "(Xcode command-line tools missing?)" >&2
+    exit 0
+fi
+
+# Explicit --backend metal must actually select an MTL device and produce
+# the same transcript TEXT as the CPU backend. Only the text: fields are
+# compared: word timestamps and token probabilities may legitimately
+# differ across backends — different kernels and accumulation orders give
+# slightly different logits, so near-tie decisions (a timestamp on a
+# frame boundary, a probability rounding) can flip, and quantized models
+# amplify this. The decoded text is expected to be stable.
+mtl=$("$APE" --backend metal -q -m "$MODEL" "$SAMPLE" 2>/dev/null) \
+    || fail "metal run exited non-zero"
+echo "$mtl" | grep -qE 'backend:[[:space:]]+MTL' || fail "metal run did not select an MTL device"
+echo "$mtl" | grep -qi 'country' || fail "metal transcription missing 'country'"
+pass "parakeet transcribes jfk.wav on metal"
+
+cpu=$("$APE" --backend cpu -q -m "$MODEL" "$SAMPLE" 2>/dev/null) \
+    || fail "cpu run exited non-zero"
+mtl_text=$(echo "$mtl" | grep '^text:' || true)
+cpu_text=$(echo "$cpu" | grep '^text:' || true)
+[ -n "$mtl_text" ] || fail "metal output has no text: line"
+if [ "$mtl_text" != "$cpu_text" ]; then
+    printf 'metal:\n%s\ncpu:\n%s\n' "$mtl_text" "$cpu_text" >&2
+    fail "metal and cpu transcript text differs"
+fi
+pass "metal and cpu transcripts match"
