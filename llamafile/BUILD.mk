@@ -62,6 +62,20 @@ LLAMAFILE_CPPFLAGS := \
 	-DLLAMAFILE_TUI \
 	-DCOSMOCC=1
 
+# Flags for every TU that includes httplib.h: cpp-httplib is built with its
+# Mbed TLS backend (see llama.cpp/BUILD.mk), and CPPHTTPLIB_MBEDTLS_SUPPORT
+# changes httplib class layouts (e.g. httplib::Result, httplib::Client), so
+# an includer compiled without it corrupts memory when it exchanges those
+# types with httplib.cpp. If you add an httplib include to a llamafile
+# source, add its object below next to the chatbot ones.
+# -iquote . and -mcosmo are for the vendored mbedtls headers themselves
+# (repo-rooted internal includes, cosmo-extension macros).
+LLAMAFILE_HTTPLIB_TLS_FLAGS := \
+	-DCPPHTTPLIB_MBEDTLS_SUPPORT \
+	-isystem third_party/mbedtls/include \
+	-iquote . \
+	-mcosmo
+
 # ==============================================================================
 # Source files - Highlight library
 # ==============================================================================
@@ -285,17 +299,21 @@ LLAMAFILE_DEPS = \
 	$(LLAMAFILE_HIGHLIGHT_KEYWORDS) \
 	$(LLAMAFILE_METAL_SOURCES) \
 	$(TINYBLAS_CPU_OBJS) \
-	o/$(MODE)/third_party/stb/stb_image_resize2.o
+	o/$(MODE)/third_party/stb/stb_image_resize2.o \
+	o/$(MODE)/third_party/mbedtls/mbedtls.a
 
 # ==============================================================================
 # Server integration
 # ==============================================================================
 
-# Include paths needed for server compilation
+# Include paths needed for server compilation. server.cpp reaches
+# httplib.h via server-cors-proxy.h, so it needs the httplib TLS flags
+# (see LLAMAFILE_HTTPLIB_TLS_FLAGS above).
 LLAMAFILE_SERVER_INCS := \
 	$(LLAMAFILE_INCLUDES) \
 	-iquote llama.cpp/tools/server \
-	-iquote o/$(MODE)/llama.cpp/tools/server
+	-iquote o/$(MODE)/llama.cpp/tools/server \
+	$(LLAMAFILE_HTTPLIB_TLS_FLAGS)
 
 # Compile server.cpp
 o/$(MODE)/llamafile/server.cpp.o: llama.cpp/tools/server/server.cpp
@@ -317,7 +335,7 @@ o/$(MODE)/llamafile/llamafile: \
 		$(LLAMAFILE_OBJS) \
 		$(LLAMAFILE_DEPS)
 	@mkdir -p $(@D)
-	$(CXX) $(LDFLAGS) -o $@ $(filter %.o,$^) $(LDLIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(filter %.o %.a,$^) $(LDLIBS)
 
 # ==============================================================================
 # Pattern rules for llamafile sources
@@ -353,6 +371,13 @@ LLAMAFILE_GPU_OBJS := \
 	o/$(MODE)/llamafile/vulkan.o
 
 o/$(MODE)/llamafile/gpu.a: $(LLAMAFILE_GPU_OBJS)
+
+# The TUI chatbot talks to the server through httplib as an HTTP client,
+# so its objects must agree with httplib.cpp on the httplib class layouts
+# (see LLAMAFILE_HTTPLIB_TLS_FLAGS).
+o/$(MODE)/llamafile/chatbot_api.o \
+o/$(MODE)/llamafile/chatbot_main.o: private \
+	LLAMAFILE_CPPFLAGS += $(LLAMAFILE_HTTPLIB_TLS_FLAGS)
 
 o/$(MODE)/llamafile/%.o: llamafile/%.cpp
 	@mkdir -p $(@D)
